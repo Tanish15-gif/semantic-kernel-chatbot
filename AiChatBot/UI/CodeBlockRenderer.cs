@@ -10,59 +10,78 @@ namespace Ai.Typer
                 .Select(x => x.TrimEnd())
                 .ToList();
 
-            int width = Math.Max(
-                40,
-                lines.Count > 0 ? lines.Max(x => x.Length) + 4 : 40
-            );
+            // Strip leading/trailing blank lines
+            while (lines.Count > 0 && string.IsNullOrWhiteSpace(lines[0]))
+                lines.RemoveAt(0);
+            while (lines.Count > 0 && string.IsNullOrWhiteSpace(lines[^1]))
+                lines.RemoveAt(lines.Count - 1);
 
-            string title = string.IsNullOrWhiteSpace(language) ? "Code" : $"{language.Trim()}";
+            // Calculate separator width (clamped to console width - 2)
+            int maxLineLen = lines.Count > 0 ? lines.Max(x => x.Length) : 0;
+            int consoleWidth = Math.Max(40, Console.WindowWidth - 2);
+            int width = Math.Min(Math.Max(40, maxLineLen + 6), consoleWidth);
 
-            Console.ForegroundColor = ConsoleColor.DarkGray;
+            string title = string.IsNullOrWhiteSpace(language) ? "code" : language.Trim().ToLower();
+            string titlePad = $" {title} ";
+
+            // ── Top separator: ─── language ──────────────────────
             Console.WriteLine();
-            Console.Write("╭");
-            Console.Write(title);
-            Console.WriteLine(new string('─', Math.Max(0, width - title.Length)) + "╮");
+            Console.ForegroundColor = ConsoleColor.DarkGray;
+            int dashesAfter = Math.Max(0, width - titlePad.Length - 3);
+            Console.Write("  ──" + titlePad);
+            Console.WriteLine(new string('─', dashesAfter));
 
+            // ── Code lines (2-space indent, no side borders)
             foreach (var line in lines)
             {
-                Console.ForegroundColor = ConsoleColor.DarkYellow;
-
-                string padded = line.PadRight(width - 2);
-
-                Console.ForegroundColor = ConsoleColor.DarkGray;
-                Console.Write("│ ");
+                Console.Write("  "); // 2-space indent only — no │ border
                 WriteHighlightedCode(line);
-                Console.Write(new string(' ', Math.Max(0, padded.Length - line.Length)));
-                Console.ForegroundColor = ConsoleColor.DarkGray;
-                Console.WriteLine(" │");
+                Console.WriteLine();
             }
+
+            // ── Bottom separator: ────────────────────────────────
             Console.ForegroundColor = ConsoleColor.DarkGray;
-            Console.WriteLine("╰" + new string('─', width) + "╯");
+            Console.WriteLine("  " + new string('─', width));
             Console.ResetColor();
+            Console.WriteLine();
         }
+
         public static void WriteHighlightedCode(string line)
         {
             string[] keywords =
             {
-                "using", "namespace", "class", "public", "private", "static",
-                "void", "int", "string", "double", "bool", "var", "new",
-                "return", "if", "else", "foreach", "for", "while",
-                "async", "await", "try", "catch", "finally"
+                "using", "namespace", "class", "public", "private", "protected",
+                "static", "void", "int", "string", "double", "float", "bool",
+                "var", "new", "null", "true", "false", "return",
+                "if", "else", "foreach", "for", "while", "do",
+                "async", "await", "try", "catch", "finally", "throw",
+                // SQL keywords
+                "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER",
+                "TABLE", "DATABASE", "FROM", "WHERE", "JOIN", "ON", "INTO",
+                "VALUES", "PRIMARY", "KEY", "IDENTITY", "NOT", "NULL", "DEFAULT",
+                "INT", "NVARCHAR", "VARCHAR", "DATETIME", "BIGINT", "BIT",
+                "ORDER", "BY", "GROUP", "HAVING", "INNER", "LEFT", "RIGHT",
+                "WITH", "AS", "BEGIN", "END", "IF", "EXISTS", "SET"
             };
+
             var parts = line.Split(' ');
 
             for (int i = 0; i < parts.Length; i++)
             {
-                string words = parts[i];
-                if (keywords.Contains(words.Trim()))
+                string word = parts[i];
+
+                if (keywords.Contains(word.Trim().TrimEnd('(', ')', ',', ';')))
                 {
                     Console.ForegroundColor = ConsoleColor.Cyan;
                 }
-                else if (words.TrimStart().StartsWith("//"))
+                else if (word.TrimStart().StartsWith("--") || word.TrimStart().StartsWith("//"))
                 {
                     Console.ForegroundColor = ConsoleColor.DarkGreen;
+                    // Print rest of line as comment
+                    Console.Write(string.Join(" ", parts.Skip(i)));
+                    break;
                 }
-                else if (words.Contains("\""))
+                else if (word.Contains('"') || word.Contains('\''))
                 {
                     Console.ForegroundColor = ConsoleColor.Yellow;
                 }
@@ -71,11 +90,12 @@ namespace Ai.Typer
                     Console.ForegroundColor = ConsoleColor.DarkYellow;
                 }
 
-                Console.Write(words);
-
-                if(i < parts.Length - 1)
+                Console.Write(word);
+                if (i < parts.Length - 1)
                     Console.Write(" ");
             }
+
+            Console.ResetColor();
         }
     }
 }

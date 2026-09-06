@@ -1,4 +1,4 @@
-using System.Net.Http.Headers;
+﻿using System.Net.Http.Headers;
 using Ai.Loader;
 using Ai.Typer;
 using Microsoft.SemanticKernel;
@@ -15,209 +15,199 @@ namespace Ai.Service
         private readonly Kernel _kernel;
         private readonly IChatCompletionService _chatService;
         private readonly ChatMessageService _memory;
-        public ToolRouter
-        (
+
+        public ToolRouter(
             Kernel kernel,
             IChatCompletionService chatservice,
-            ChatMessageService memory
-        )
+            ChatMessageService memory)
         {
             _kernel = kernel;
             _chatService = chatservice;
             _memory = memory;
         }
 
-        public async Task<bool> TryHandleAsync(string prompt, ChatHistory chatHistory, string lastuserTopic)
+        public async Task<bool> TryHandleAsync(string prompt, ChatHistory chatHistory, string lastuserTopic, int sessionId)
         {
             if (NeedsDatabaseOperation(prompt))
             {
-                await HandleDatabaseAsync(prompt, chatHistory);
-                return true;
-            }
-            if (NeedsDateTime(prompt))
-            {
-                await HandleDateTimeAsync(prompt, chatHistory);
-                return true;
-            }
-            if (NeedsMath(prompt))
-            {
-                await HandleMathAsync(prompt, chatHistory);
+                await HandleDatabaseAsync(prompt, chatHistory, sessionId);
                 return true;
             }
 
+            if (NeedsDateTime(prompt))
+            {
+                await HandleDateTimeAsync(prompt, chatHistory, sessionId);
+                return true;
+            }
+
+            if (NeedsMath(prompt))
+            {
+                await HandleMathAsync(prompt, chatHistory, sessionId);
+                return true;
+            }
 
             if (NeedsSearch(prompt))
             {
-                await HandleSearchAsync(prompt, chatHistory, lastuserTopic);
+                await HandleSearchAsync(prompt, chatHistory, lastuserTopic, sessionId);
                 return true;
             }
 
             return false;
         }
+
+        #region Intent Detection
+
         public bool NeedsSearch(string prompt)
         {
-            string p = prompt.ToLower();
+            string p = prompt.Trim().ToLower();
 
-            return p.Contains("latest") ||
-                   p.Contains("news") ||
-                   p.Contains("today") ||
-                   p.Contains("current") ||
-                   p.Contains("recent") ||
-                   p.Contains("released") ||
-                   p.Contains("release") ||
-                   p.Contains("2026") ||
-                   p.Contains("new");
-        }
-        public bool NeedsDateTime(string prompt)
-        {
-            string p = prompt.ToLower();
-
-            return p.Contains("time") ||
-                p.Contains("date") ||
-                p.Contains("day");
-        }
-        public bool NeedsMath(string prompt)
-        {
-            string p = prompt.ToLower();
-
-            if (p.Contains("c++") || p.Contains("c#") || p.Contains("f#"))
+            // Filter out programming commands like "new table", "new variable", "new method", "new chat"
+            if (Regex.IsMatch(p, @"\bnew\s+(table|database|class|method|function|variable|file|chat|project|feature)\b"))
                 return false;
 
-            bool hasMathExpression = Regex.IsMatch(
-                p, @"\d+\s*[\+\-\*/]\s*\d+"
-            );
+            // Explicit search requests
+            if (Regex.IsMatch(p, @"\b(search|look\s+up|google|bing|browse\s+(for|the\s+web)|find\s+online)\b"))
+                return true;
 
-            bool hasMathWords =
-        p.Contains("add") ||
-        p.Contains("plus") ||
-        p.Contains("sum") ||
-        p.Contains("subtract") ||
-        p.Contains("minus") ||
-        p.Contains("multiply") ||
-        p.Contains("times") ||
-        p.Contains("divide") ||
-        p.Contains("division");
+            // Current events, news, headlines, trending
+            if (Regex.IsMatch(p, @"\b(current\s+events|breaking\s+news|latest\s+news|today'?s\s+news|news\s+(about|on|in)|trending|headlines)\b"))
+                return true;
 
-            bool hasNumber = Regex.IsMatch(p, @"\d");
+            // Live facts: weather, prices, sports
+            if (Regex.IsMatch(p, @"\b(current\s+weather|weather\s+in|stock\s+price|current\s+price|price\s+of|who\s+won|score\s+of)\b"))
+                return true;
 
-            return hasMathExpression || (hasMathWords && hasNumber);
+            // Releases, versions, and new features
+            if (Regex.IsMatch(p, @"\b(release\s+date|when\s+(was|is)\s+.*\s+released|features\s+of|features\s+in|what'?s\s+new\s+in)\b"))
+                return true;
+
+            // "what is going on", "what happened"
+            if (Regex.IsMatch(p, @"\b(what\s+is\s+(the\s+latest|going\s+on)|what\s+happened|who\s+is\s+currently)\b"))
+                return true;
+
+            return false;
+        }
+
+        public bool NeedsDateTime(string prompt)
+        {
+            string p = prompt.Trim().ToLower();
+
+            // Reject programming questions about Date / DateTime
+            if (p.Contains("c#") || p.Contains("sql") || p.Contains("python") || p.Contains("javascript") || p.Contains("code"))
+            {
+                if (!p.Contains("what time") && !p.Contains("what date") && !p.Contains("current time") && !p.Contains("current date"))
+                    return false;
+            }
+
+            // Reject words containing "date" like "update", "candidate", "validate"
+            if (Regex.IsMatch(p, @"\b(update|candidate|validate|mandate|dateofbirth)\b"))
+                return false;
+
+            // Specific date/time inquiries
+            return Regex.IsMatch(p, @"\b(current\s+time|what\s+time\s+is\s+it|tell\s+me\s+the\s+time|what\s+is\s+the\s+time|the\s+time\s+now)\b") ||
+                   Regex.IsMatch(p, @"\b(current\s+date|what\s+is\s+(today'?s|the)\s+date|today'?s\s+date|what\s+date\s+is\s+it)\b") ||
+                   Regex.IsMatch(p, @"\b(what\s+day\s+is\s+(it|today)|day\s+of\s+the\s+week)\b") ||
+                   Regex.IsMatch(p, @"\b(days\s+between|how\s+many\s+days\s+(until|between))\b") ||
+                   Regex.IsMatch(p, @"\b(date\s+in\s+\d+\s+days|what\s+date\s+will\s+it\s+be)\b");
+        }
+
+        public bool NeedsMath(string prompt)
+        {
+            string p = prompt.Trim().ToLower();
+
+            if (p.Contains("c++") || p.Contains("c#") || p.Contains("f#") || p.Contains("css"))
+                return false;
+
+            // Arithmetic expressions: 2 + 2, 10.5 * 3, (5 + 2) / 3, 2^8, 10 % 3
+            if (Regex.IsMatch(p, @"\d+(\.\d+)?\s*[\+\-\*\/\^\%]\s*\d+"))
+                return true;
+
+            // Specific mathematical functions
+            if (Regex.IsMatch(p, @"\b(sqrt|square\s+root|power|percent|percentage|modulus|calculate|eval|evaluate)\b.*\d+"))
+                return true;
+
+            return false;
         }
 
         public bool NeedsDatabaseOperation(string prompt)
         {
-            string p = prompt.ToLower();
+            string p = prompt.Trim().ToLower();
 
-            if (p.StartsWith("how to") ||
-        p.StartsWith("how can") ||
-        p.StartsWith("what is") ||
-        p.StartsWith("explain") ||
-        p.StartsWith("teach") ||
-        p.Contains("how do i"))
+            // Skip instructional/educational prompts
+            if (p.StartsWith("how to") || p.StartsWith("how can") || p.StartsWith("what is") ||
+                p.StartsWith("explain") || p.StartsWith("teach") || p.Contains("how do i"))
             {
                 return false;
             }
 
-            return p.Contains("create database") ||
-                   p.Contains("create a database") ||
-                   p.Contains("make database") ||
-                   p.Contains("make a database") ||
-                   p.Contains("new database") ||
-                   p.Contains("create table") ||
-                   p.Contains("create a table") ||
-                   p.Contains("make table") ||
-                   p.Contains("make a table") ||
-                   (p.Contains("database") && p.Contains("table"));
+            return Regex.IsMatch(p, @"\b(create\s+database|make\s+database|create\s+a\s+database)\b") ||
+                   Regex.IsMatch(p, @"\b(create\s+table|make\s+table|create\s+a\s+table)\b") ||
+                   Regex.IsMatch(p, @"\b(list\s+databases|show\s+databases|view\s+databases|what\s+databases)\b") ||
+                   Regex.IsMatch(p, @"\b(list\s+tables|show\s+tables|view\s+tables|what\s+tables)\b") ||
+                   Regex.IsMatch(p, @"\b(describe\s+table|schema\s+of\s+table|columns\s+in\s+table)\b") ||
+                   Regex.IsMatch(p, @"\b(select\s+\*\s+from|query\s+table)\b");
         }
-        private async Task HandleMathAsync(string Prompt, ChatHistory chatHistory)
+
+        #endregion
+
+        #region Handlers
+
+        private async Task HandleMathAsync(string prompt, ChatHistory chatHistory, int sessionId)
         {
             var cts = new CancellationTokenSource();
             var spinnerTask = FetchData.Spinner(cts.Token, "Calculating", ConsoleColor.Cyan);
 
-
             string answer = "";
-            var renderer = new MarkdownStreamRenderer();
 
             try
             {
-                string lowerPrompt = Prompt.ToLower();
-                int[] numbers = ExtractNumbers(Prompt);
+                string p = prompt.ToLower();
+                object? toolResult = null;
+                string label = "";
 
-                if (numbers.Length == 0)
+                // Check for square root
+                var sqrtMatch = Regex.Match(p, @"(sqrt|square\s+root\s+of)\s*(\d+(\.\d+)?)");
+                if (sqrtMatch.Success && double.TryParse(sqrtMatch.Groups[2].Value, out double sqrtNum))
                 {
-                    cts.Cancel();
-                    await spinnerTask;
+                    toolResult = await _kernel.InvokeAsync("MathPlugins", "SquareRoot", new() { ["number"] = sqrtNum });
+                    label = $"√{sqrtNum}";
+                }
+                // Check for percentage (e.g. 20% of 150)
+                else if (Regex.IsMatch(p, @"(\d+(\.\d+)?)\s*%\s*(of\s*)?(\d+(\.\d+)?)"))
+                {
+                    var pctMatch = Regex.Match(p, @"(\d+(\.\d+)?)\s*%\s*(of\s*)?(\d+(\.\d+)?)");
+                    double pct = double.Parse(pctMatch.Groups[1].Value);
+                    double total = double.Parse(pctMatch.Groups[4].Value);
+                    toolResult = await _kernel.InvokeAsync("MathPlugins", "Percentage", new() { ["percentage"] = pct, ["total"] = total });
+                    label = $"{pct}% of {total}";
+                }
+                // Check for expression (e.g. 2 + 2, (15 * 4) + 10, 2^8)
+                else
+                {
+                    var exprMatch = Regex.Match(prompt, @"[\d\.\s\+\-\*\/\^\%\(\)]+");
+                    string expr = exprMatch.Success ? exprMatch.Value.Trim() : prompt;
 
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("\nNo numbers found for calculation.\n");
-                    Console.ResetColor();
-                    return;
+                    toolResult = await _kernel.InvokeAsync("MathPlugins", "EvaluateExpression", new() { ["expression"] = expr });
+                    label = expr;
                 }
 
-                if (lowerPrompt.Contains("subtract") && lowerPrompt.Contains("from") && numbers.Length == 2)
-                {
-                    numbers = new[] { numbers[1], numbers[0] };
-                }
-                var toolResult = lowerPrompt switch
-                {
-                    var p when p.Contains("add") || p.Contains("plus") || p.Contains("sum") || p.Contains("+")
-                        => await _kernel.InvokeAsync("MathPlugins", "Add", new() { ["numbers"] = numbers }),
-
-                    var p when p.Contains("subtract") || p.Contains("minus") || p.Contains("-")
-                        => await _kernel.InvokeAsync("MathPlugins", "Subtract", new() { ["numbers"] = numbers }),
-
-                    var p when p.Contains("multiply") || p.Contains("times") || p.Contains("*")
-                        => await _kernel.InvokeAsync("MathPlugins", "Multiply", new() { ["numbers"] = numbers }),
-
-                    _ => await _kernel.InvokeAsync("MathPlugins", "Divide", new() { ["numbers"] = numbers })
-                };
                 cts.Cancel();
                 await spinnerTask;
-                var toolHistory = new ChatHistory();
 
-                toolHistory.AddSystemMessage(@"
-                    You are Red Queen AI.
-                    The user asked a math question.
-                    State the direct answer concisely in 1 sentence or plain result.
-                    No filler or lengthy explanation.
-                ");
-
-                toolHistory.AddUserMessage($@"
-                User question:
-                {Prompt}
-
-                Tool result:
-                {toolResult}
-                ");
+                string valStr = toolResult?.ToString() ?? "";
+                if (string.IsNullOrWhiteSpace(label))
+                    answer = $"Result: {valStr}";
+                else
+                    answer = $"{label} = {valStr}";
 
                 Console.ForegroundColor = ConsoleColor.Green;
-
-                await foreach (var chunk in _chatService.GetStreamingChatMessageContentsAsync(
-                    toolHistory,
-                    new OpenAIPromptExecutionSettings
-                    {
-                        Temperature = 0.1,
-                        MaxTokens = 80
-                    }
-                ))
-                {
-                    if (!string.IsNullOrEmpty(chunk.Content))
-                    {
-                        foreach (char c in chunk.Content)
-                        {
-                            renderer.WriteChunk(c.ToString());
-                            answer += c;
-                            await Task.Delay(0);
-                        }
-                    }
-                }
-                renderer.Complete();
+                Console.WriteLine($"\n{answer}\n");
                 Console.ResetColor();
-                Console.WriteLine("\n");
 
-                chatHistory.AddUserMessage(Prompt);
+                chatHistory.AddUserMessage(prompt);
                 chatHistory.AddAssistantMessage(answer);
 
-                await _memory.SaveMessageAsync("assistant", answer);
+                await _memory.SaveMessageAsync("assistant", answer, sessionId);
             }
             catch (Exception ex)
             {
@@ -225,72 +215,74 @@ namespace Ai.Service
                 await spinnerTask;
 
                 Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"\nMath plugin failed: {ex.Message}\n");
+                Console.WriteLine($"\nMath calculation failed: {ex.Message}\n");
                 Console.ResetColor();
             }
         }
 
-        private async Task HandleDateTimeAsync(string prompt, ChatHistory chatHistory)
+        private async Task HandleDateTimeAsync(string prompt, ChatHistory chatHistory, int sessionId)
         {
             var cts = new CancellationTokenSource();
             var spinnerTask = FetchData.Spinner(cts.Token, "Checking Time", ConsoleColor.Blue);
 
             string answer = "";
-            var renderer = new MarkdownStreamRenderer();
 
             try
             {
-                var toolResult = await _kernel.InvokeAsync(
-                    "DatePlugin", "CurrentDateTime"
-                );
+                string p = prompt.ToLower();
+
+                if (p.Contains("day of the week") || p.Contains("what day"))
+                {
+                    var day = (await _kernel.InvokeAsync("DatePlugin", "DayOfWeek")).ToString();
+                    answer = $"Today is {day}.";
+                }
+                else if (p.Contains("what time") || p.Contains("current time") || p.Contains("the time"))
+                {
+                    var time = (await _kernel.InvokeAsync("DatePlugin", "CurrentTime")).ToString();
+                    answer = $"The current time is {time}.";
+                }
+                else if (p.Contains("what is today's date") || p.Contains("current date") || p.Contains("what date") || p.Contains("today's date"))
+                {
+                    var date = (await _kernel.InvokeAsync("DatePlugin", "CurrentDate")).ToString();
+                    answer = $"Today's date is {date}.";
+                }
+                else if (Regex.IsMatch(p, @"\bdate\s+in\s+(\d+)\s+days\b"))
+                {
+                    var match = Regex.Match(p, @"\bdate\s+in\s+(\d+)\s+days\b");
+                    int days = int.Parse(match.Groups[1].Value);
+                    answer = (await _kernel.InvokeAsync("DatePlugin", "AddDays", new() { ["days"] = days })).ToString();
+                }
+                else if (Regex.IsMatch(p, @"\bdays\s+between\b"))
+                {
+                    var dates = Regex.Matches(p, @"\d{4}-\d{2}-\d{2}");
+                    if (dates.Count == 2)
+                    {
+                        answer = (await _kernel.InvokeAsync("DatePlugin", "DaysBetween",
+                            new() { ["startDate"] = dates[0].Value, ["endDate"] = dates[1].Value })).ToString();
+                    }
+                    else
+                    {
+                        var dt = (await _kernel.InvokeAsync("DatePlugin", "CurrentDateTime")).ToString();
+                        answer = $"Current date and time: {dt}.";
+                    }
+                }
+                else
+                {
+                    var dt = (await _kernel.InvokeAsync("DatePlugin", "CurrentDateTime")).ToString();
+                    answer = $"Current date and time: {dt}.";
+                }
+
                 cts.Cancel();
                 await spinnerTask;
 
-                var toolHistory = new ChatHistory();
-
-                toolHistory.AddSystemMessage(@"
-                    You are Red Queen AI.
-                    The user asked about date or time.
-                    State the answer directly in 1 brief, natural sentence.
-                    No filler.
-                ");
-                toolHistory.AddUserMessage($@"
-                    User question:
-                    {prompt}
-
-                    Tool result:
-                    {toolResult}
-                ");
                 Console.ForegroundColor = ConsoleColor.Green;
-
-                await foreach (var chunk in _chatService.GetStreamingChatMessageContentsAsync(
-                    toolHistory,
-                    new OpenAIPromptExecutionSettings
-                    {
-                        Temperature = 0.2,
-                        MaxTokens = 60
-                    }
-                ))
-                {
-                    if (!string.IsNullOrEmpty(chunk.Content))
-                    {
-                        foreach (char c in chunk.Content)
-                        {
-                            renderer.WriteChunk(c.ToString());
-                            answer += c;
-
-                            await Task.Delay(0);
-                        }
-                    }
-                }
-                renderer.Complete();
+                Console.WriteLine($"\n{answer}\n");
                 Console.ResetColor();
-                Console.WriteLine("\n");
 
                 chatHistory.AddUserMessage(prompt);
                 chatHistory.AddAssistantMessage(answer);
 
-                await _memory.SaveMessageAsync("assistant", answer);
+                await _memory.SaveMessageAsync("assistant", answer, sessionId);
             }
             catch (Exception ex)
             {
@@ -298,14 +290,16 @@ namespace Ai.Service
                 await spinnerTask;
 
                 Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"\nDate plugin failed: {ex.Message}\n");
+                Console.WriteLine($"\nDate check failed: {ex.Message}\n");
                 Console.ResetColor();
             }
         }
+
         private async Task HandleSearchAsync(
             string prompt,
             ChatHistory chatHistory,
-            string lastUserTopic)
+            string lastUserTopic,
+            int sessionId)
         {
             var cts = new CancellationTokenSource();
             var spinnerTask = FetchData.Spinner(cts.Token, "Searching Web", ConsoleColor.Yellow);
@@ -317,50 +311,33 @@ namespace Ai.Service
             {
                 string searchQuery = BuildSearchQuery(prompt, lastUserTopic);
 
-                var searchResults = await _kernel.InvokeAsync(
+                var searchResults = (await _kernel.InvokeAsync(
                     "WebSearchPlugin",
                     "Search",
                     new() { ["query"] = searchQuery }
-                );
-
-                var researchHistory = new ChatHistory();
-
-                researchHistory.AddSystemMessage(@"
-You are a concise browsing assistant.
-Use ONLY the provided search results and page content.
-Do not invent details.
-
-Rules for response:
-- Provide a direct, minimal answer (2 to 4 sentences maximum).
-- Focus strictly on answering the user's question directly.
-- Do NOT include long essays, filler intros, or repeated points.
-- If the exact answer isn't in the sources, state that clearly in one sentence.
-");
-
-                researchHistory.AddUserMessage($@"
-User question:
-{prompt}
-
-Search query used:
-{searchQuery}
-
-Search results:
-{searchResults}
-");
+                )).ToString();
 
                 cts.Cancel();
                 await spinnerTask;
 
+                var researchHistory = new ChatHistory();
+                researchHistory.AddSystemMessage(@"
+You are a concise search assistant.
+Use the provided search results to answer the user's question directly in 2 to 4 sentences.
+Include source URLs if available.");
+
+                researchHistory.AddUserMessage($"Question: {prompt}\nSearch Results:\n{searchResults}");
+
                 Console.ForegroundColor = ConsoleColor.Green;
 
+                // MaxTokens = 500 gives reasoning models enough budget to complete thinking and generate answer
                 await foreach (var chunk in _chatService.GetStreamingChatMessageContentsAsync(
                     researchHistory,
                     new OpenAIPromptExecutionSettings
                     {
                         Temperature = 0.3,
-                        MaxTokens = 250
-                    }
-                ))
+                        MaxTokens = 500
+                    }))
                 {
                     if (!string.IsNullOrEmpty(chunk.Content))
                     {
@@ -368,7 +345,6 @@ Search results:
                         {
                             renderer.WriteChunk(c.ToString());
                             answer += c;
-
                             await Task.Delay(0);
                         }
                     }
@@ -376,12 +352,24 @@ Search results:
 
                 renderer.Complete();
                 Console.ResetColor();
-                Console.WriteLine("\n");
+
+                // If the model produced no content (e.g. reasoning exhausted), fall back to raw search results
+                if (string.IsNullOrWhiteSpace(answer))
+                {
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine($"\n{searchResults}\n");
+                    Console.ResetColor();
+                    answer = searchResults;
+                }
+                else
+                {
+                    Console.WriteLine("\n");
+                }
 
                 chatHistory.AddUserMessage(prompt);
                 chatHistory.AddAssistantMessage(answer);
 
-                await _memory.SaveMessageAsync("assistant", answer);
+                await _memory.SaveMessageAsync("assistant", answer, sessionId);
             }
             catch (Exception ex)
             {
@@ -394,87 +382,33 @@ Search results:
             }
         }
 
-        private static string BuildSearchQuery(string prompt, string lastTopic)
-        {
-            string p = prompt.ToLower();
-
-            bool isFollowUp =
-                p.Contains("latest") ||
-                p.Contains("new") ||
-                p.Contains("current") ||
-                p.Contains("today") ||
-                p.Contains("this") ||
-                p.Contains("that") ||
-                p.Contains("it");
-
-            if (isFollowUp && !string.IsNullOrWhiteSpace(lastTopic))
-            {
-                return $"{lastTopic} {prompt}";
-            }
-
-            return prompt;
-        }
-        private static int[] ExtractNumbers(string text)
-        {
-            return System.Text.RegularExpressions.Regex
-                .Matches(text, @"-?\d+")
-                .Select(m => int.Parse(m.Value))
-                .ToArray();
-        }
-        private async Task HandleDatabaseAsync(string prompt, ChatHistory chatHistory)
+        private async Task HandleDatabaseAsync(string prompt, ChatHistory chatHistory, int sessionId)
         {
             var cts = new CancellationTokenSource();
-            var spinnerTask = FetchData.Spinner(
-                cts.Token,
-                "Executing SQL",
-                ConsoleColor.Blue
-            );
-
-            string answer = "";
-            var renderer = new MarkdownStreamRenderer();
+            var spinnerTask = FetchData.Spinner(cts.Token, "Database", ConsoleColor.Blue);
 
             try
             {
                 var planHistory = new ChatHistory();
-
                 planHistory.AddSystemMessage(@"
-You are a database operation planner.
-
-Return ONLY valid JSON.
-No markdown.
-No explanation.
+You are a database planner. Return ONLY valid JSON. No markdown backticks. No explanation.
 
 Allowed operations:
-1. CreateDatabase
-2. CreateTable
-3. CreateDatabaseAndTable
+- CreateDatabase (databaseName)
+- CreateTable (databaseName, tableName, columns)
+- CreateDatabaseAndTable (databaseName, tableName, columns)
+- ListDatabases ()
+- ListTables (databaseName)
+- DescribeTable (databaseName, tableName)
+- ExecuteQuery (databaseName, query)
 
-Rules:
-- Use safe SQL Server types only:
-  INT, BIGINT, BIT, FLOAT, DATE, DATETIME,
-  DECIMAL(18,2),
-  NVARCHAR(50), NVARCHAR(100), NVARCHAR(255), NVARCHAR(MAX),
-  VARCHAR(50), VARCHAR(100), VARCHAR(255)
-- If user does not give column types, infer sensible types.
-- If user asks for ProductId/Id primary key, make it INT identity primary key.
-- DatabaseName and TableName must be simple names only.
+Supported column types: INT, BIGINT, BIT, FLOAT, DATE, DATETIME, DECIMAL(18,2), NVARCHAR(50), NVARCHAR(100), NVARCHAR(255), NVARCHAR(MAX), VARCHAR(50), VARCHAR(100), VARCHAR(255).
 
-JSON shape:
+Example JSON:
 {
-  ""operation"": ""CreateDatabaseAndTable"",
-  ""databaseName"": ""ShopDB"",
-  ""tableName"": ""Products"",
-  ""columns"": [
-    {
-      ""name"": ""ProductId"",
-      ""type"": ""INT"",
-      ""isPrimaryKey"": true,
-      ""isIdentity"": true,
-      ""isNullable"": false
-    }
-  ]
-}
-");
+  ""operation"": ""ListTables"",
+  ""databaseName"": ""RedQueenAi""
+}");
 
                 planHistory.AddUserMessage(prompt);
 
@@ -483,88 +417,73 @@ JSON shape:
                     new OpenAIPromptExecutionSettings
                     {
                         Temperature = 0.1,
-                        MaxTokens = 350
-                    }
-                );
+                        MaxTokens = 500
+                    });
 
                 string rawJson = CleanJson(planResult.Content ?? "");
-
                 var plan = JsonSerializer.Deserialize<DataBasePlan>(
                     rawJson,
-                    new JsonSerializerOptions
-                    {
-                        PropertyNameCaseInsensitive = true
-                    }
-                );
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
                 if (plan == null)
-                    throw new Exception("AI did not return a valid database plan.");
+                    throw new Exception("Could not parse database operation plan.");
 
                 string toolResult = "";
 
-                if (plan.Operation == "CreateDatabase")
+                switch (plan.Operation?.Trim())
                 {
-                    var result = await _kernel.InvokeAsync(
-                        "DatabasePlugin",
-                        "CreateDatabase",
-                        new() { ["databaseName"] = plan.DataBaseName }
-                    );
+                    case "CreateDatabase":
+                        toolResult = (await _kernel.InvokeAsync("DatabasePlugin", "CreateDatabase",
+                            new() { ["databaseName"] = plan.DataBaseName })).ToString();
+                        break;
 
-                    toolResult = result.ToString();
-                }
-                else if (plan.Operation == "CreateTable")
-                {
-                    var result = await _kernel.InvokeAsync(
-                        "DatabasePlugin",
-                        "CreateTable",
-                        new()
-                        {
-                            ["databaseName"] = plan.DataBaseName,
-                            ["tableName"] = plan.TableName,
-                            ["columns"] = plan.Columns
-                        }
-                    );
+                    case "CreateTable":
+                        toolResult = (await _kernel.InvokeAsync("DatabasePlugin", "CreateTable",
+                            new() { ["databaseName"] = plan.DataBaseName, ["tableName"] = plan.TableName, ["columns"] = plan.Columns })).ToString();
+                        break;
 
-                    toolResult = result.ToString();
-                }
-                else if (plan.Operation == "CreateDatabaseAndTable")
-                {
-                    var dbResult = await _kernel.InvokeAsync(
-                        "DatabasePlugin",
-                        "CreateDatabase",
-                        new() { ["databaseName"] = plan.DataBaseName }
-                    );
+                    case "CreateDatabaseAndTable":
+                        var dbRes = await _kernel.InvokeAsync("DatabasePlugin", "CreateDatabase",
+                            new() { ["databaseName"] = plan.DataBaseName });
+                        var tbRes = await _kernel.InvokeAsync("DatabasePlugin", "CreateTable",
+                            new() { ["databaseName"] = plan.DataBaseName, ["tableName"] = plan.TableName, ["columns"] = plan.Columns });
+                        toolResult = $"{dbRes}\n{tbRes}";
+                        break;
 
-                    var tableResult = await _kernel.InvokeAsync(
-                        "DatabasePlugin",
-                        "CreateTable",
-                        new()
-                        {
-                            ["databaseName"] = plan.DataBaseName,
-                            ["tableName"] = plan.TableName,
-                            ["columns"] = plan.Columns
-                        }
-                    );
+                    case "ListDatabases":
+                        toolResult = (await _kernel.InvokeAsync("DatabasePlugin", "ListDatabases")).ToString();
+                        break;
 
-                    toolResult = dbResult + "\n" + tableResult;
-                }
-                else
-                {
-                    throw new Exception($"Unsupported database operation: {plan.Operation}");
+                    case "ListTables":
+                        toolResult = (await _kernel.InvokeAsync("DatabasePlugin", "ListTables",
+                            new() { ["databaseName"] = plan.DataBaseName ?? "RedQueenAi" })).ToString();
+                        break;
+
+                    case "DescribeTable":
+                        toolResult = (await _kernel.InvokeAsync("DatabasePlugin", "DescribeTable",
+                            new() { ["databaseName"] = plan.DataBaseName ?? "RedQueenAi", ["tableName"] = plan.TableName })).ToString();
+                        break;
+
+                    case "ExecuteQuery":
+                        toolResult = (await _kernel.InvokeAsync("DatabasePlugin", "ExecuteSelectQuery",
+                            new() { ["databaseName"] = plan.DataBaseName ?? "RedQueenAi", ["selectQuery"] = plan.Query })).ToString();
+                        break;
+
+                    default:
+                        throw new Exception($"Unsupported database operation: {plan.Operation}");
                 }
 
                 cts.Cancel();
                 await spinnerTask;
 
-                answer = toolResult;
-
                 Console.ForegroundColor = ConsoleColor.Green;
-                Console.WriteLine($"\n{answer}\n");
+                Console.WriteLine($"\n{toolResult}\n");
                 Console.ResetColor();
-                chatHistory.AddUserMessage(prompt);
-                chatHistory.AddAssistantMessage(answer);
 
-                await _memory.SaveMessageAsync("assistant", answer);
+                chatHistory.AddUserMessage(prompt);
+                chatHistory.AddAssistantMessage(toolResult);
+
+                await _memory.SaveMessageAsync("assistant", toolResult, sessionId);
             }
             catch (Exception ex)
             {
@@ -576,25 +495,32 @@ JSON shape:
                 Console.ResetColor();
             }
         }
+
         private static string CleanJson(string text)
         {
-            text = text.Trim();
-
-            if (text.StartsWith("```"))
+            var cleaned = text.Trim();
+            if (cleaned.StartsWith("```"))
             {
-                text = text
-                    .Replace("```json", "")
-                    .Replace("```", "")
-                    .Trim();
+                var lines = cleaned.Split('\n').ToList();
+                if (lines.Count > 0) lines.RemoveAt(0);
+                if (lines.Count > 0 && lines[^1].Trim().StartsWith("```")) lines.RemoveAt(lines.Count - 1);
+                cleaned = string.Join("\n", lines).Trim();
             }
-
-            int start = text.IndexOf('{');
-            int end = text.LastIndexOf('}');
-
-            if (start >= 0 && end > start)
-                return text.Substring(start, end - start + 1);
-
-            return text;
+            return cleaned;
         }
+
+        private static string BuildSearchQuery(string prompt, string lastTopic)
+        {
+            var cleaned = Regex.Replace(prompt, @"\b(search\s+(the\s+web\s+for|web\s+for|for)?|look\s+up|google|tell\s+me\s+about)\b", "", RegexOptions.IgnoreCase).Trim();
+            cleaned = Regex.Replace(cleaned, @"^(what\s+is|what\s+are|what'?s)\s+", "", RegexOptions.IgnoreCase).Trim();
+            cleaned = Regex.Replace(cleaned, @"\s+(going\s+on|right\s+now|currently)\??$", "", RegexOptions.IgnoreCase).Trim(' ', '?');
+
+            if (string.IsNullOrWhiteSpace(cleaned))
+                return prompt;
+
+            return cleaned;
+        }
+
+        #endregion
     }
 }
